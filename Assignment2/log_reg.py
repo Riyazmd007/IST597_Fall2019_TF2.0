@@ -1,176 +1,183 @@
-""" 
-author:-aam35
 """
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL']='2'
+Author: Riyaz
+"""
 
-import numpy as np
-import tensorflow as tf
-tf.enable_eager_execution()
-import time
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader, random_split
 import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix
+import time
+import numpy as np
 
-import utils
-tf.executing_eagerly()
-# Define paramaters for the model
-learning_rate = None
-batch_size = None
-n_epochs = None
-n_train = None
-n_test = None
+# -------------------------------
+# Step 1: Prepare dataset
+# -------------------------------
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,))
+])
 
-# Step 1: Read in data
-fmnist_folder = 'None'
-#Create dataset load function [Refer fashion mnist github page for util function]
-#Create train,validation,test split
-#train, val, test = utils.read_fmnist(fmnist_folder, flatten=True)
+train_dataset = datasets.FashionMNIST(root='./data', train=True, download=True, transform=transform)
+test_dataset = datasets.FashionMNIST(root='./data', train=False, download=True, transform=transform)
 
-# Step 2: Create datasets and iterator
-# create training Dataset and batch it
-train_data = None
+input_size = 28*28
+output_size = 10
+n_epochs = 10
+batch_size = 64
 
-# create testing Dataset and batch it
-test_data = None
-#############################
-########## TO DO ############
-#############################
+# Split train/validation
+train_size = int(0.8 * len(train_dataset))
+val_size = len(train_dataset) - train_size
+train_dataset, val_dataset = random_split(train_dataset, [train_size, val_size])
 
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-# create one iterator and initialize it with different datasets
-iterator = tf.data.Iterator.from_structure(train_data.output_types, 
-                                           train_data.output_shapes)
-img, label = iterator.get_next()
+# -------------------------------
+# Step 2: Define logistic regression from scratch (no class)
+# -------------------------------
 
-train_init = iterator.make_initializer(train_data)	# initializer for train_data
-test_init = iterator.make_initializer(test_data)	# initializer for train_data
+# Initialize weights and bias
+w = torch.randn(input_size, output_size, requires_grad=True)
+b = torch.zeros(output_size, requires_grad=True)
 
-# Step 3: create weights and bias
-# w is initialized to random variables with mean of 0, stddev of 0.01
-# b is initialized to 0
-# shape of w depends on the dimension of X and Y so that Y = tf.matmul(X, w)
-# shape of b depends on Y
-w, b = None, None
-#############################
-########## TO DO ############
-#############################
+# Softmax function for predictions
+def softmax(x):
+    exp_x = torch.exp(x - x.max(dim=1, keepdim=True).values)
+    return exp_x / exp_x.sum(dim=1, keepdim=True)
 
+# Prediction function
+def predict(X):
+    return X @ w + b
 
-# Step 4: build model
-# the model that returns the logits.
-# this logits will be later passed through softmax layer
-logits = None
-#############################
-########## TO DO ############
-#############################
+# -------------------------------
+# Step 3: Loss and optimizer
+# -------------------------------
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam([w, b], lr=0.001)
 
+# -------------------------------
+# Step 4: Training loop
+# -------------------------------
+train_losses, val_losses = [], []
+train_acc_list, val_acc_list = [], []
 
-# Step 5: define loss function
-# use cross entropy of softmax of logits as the loss function
-loss = None
-#############################
-########## TO DO ############
-#############################
-
-
-# Step 6: define optimizer
-# using Adam Optimizer with pre-defined learning rate to minimize loss
-optimizer = None
-#############################
-########## TO DO ############
-#############################
-
-
-# Step 7: calculate accuracy with test set
-preds = tf.nn.softmax(logits)
-correct_preds = tf.equal(tf.argmax(preds, 1), tf.argmax(label, 1))
-accuracy = tf.reduce_sum(tf.cast(correct_preds, tf.float32))
-
-#Step 8: train the model for n_epochs times
-for i in range(n_epochs):
-	total_loss = 0
-	n_batches = 0
-	#Optimize the loss function
-	print("Train and Validation accuracy")
-	################################
-	###TO DO#####
-	############
-	
-#Step 9: Get the Final test accuracy
-
-#Step 10: Helper function to plot images in 3*3 grid
-#You can change the function based on your input pipeline
-
-def plot_images(images, y, yhat=None):
-    assert len(images) == len(y) == 9
+for epoch in range(n_epochs):
+    start_time = time.time()
     
-    # Create figure with 3x3 sub-plots.
+    # Training
+    total_loss, correct, total = 0, 0, 0
+    for images, labels in train_loader:
+        images = images.view(-1, input_size)
+        optimizer.zero_grad()
+        outputs = predict(images)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        predicted = torch.argmax(outputs, dim=1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+    
+    train_losses.append(total_loss / len(train_loader))
+    train_acc_list.append(correct / total)
+    
+    # Validation
+    val_loss, correct, total = 0, 0, 0
+    with torch.no_grad():
+        for images, labels in val_loader:
+            images = images.view(-1, input_size)
+            outputs = predict(images)
+            loss = criterion(outputs, labels)
+            val_loss += loss.item()
+            predicted = torch.argmax(outputs, dim=1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+    val_losses.append(val_loss / len(val_loader))
+    val_acc_list.append(correct / total)
+    
+    print(f"Epoch {epoch+1}/{n_epochs}, "
+          f"Train Loss: {train_losses[-1]:.4f}, Val Loss: {val_losses[-1]:.4f}, "
+          f"Train Acc: {train_acc_list[-1]:.4f}, Val Acc: {val_acc_list[-1]:.4f}, "
+          f"Time: {time.time()-start_time:.2f}s")
+    
+    # Plotting 9 test images at last epoch
+    if epoch == n_epochs - 1:
+        test_iter = iter(test_loader)
+        images, labels = next(test_iter)
+        images_flat = images.view(-1, input_size)
+        with torch.no_grad():
+            outputs = predict(images_flat)
+            preds = torch.argmax(outputs, dim=1)
+        plot_images(images=images[:9], labels=labels[:9], preds=preds[:9])
+
+# -------------------------------
+# Step 5: Test accuracy
+# -------------------------------
+correct, total = 0, 0
+with torch.no_grad():
+    for images, labels in test_loader:
+        images = images.view(-1, input_size)
+        outputs = predict(images)
+        predicted = torch.argmax(outputs, dim=1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+
+test_acc = correct / total
+print(f"Test Accuracy: {test_acc:.4f}")
+
+# -------------------------------
+# Step 6: Plot training and validation loss
+# -------------------------------
+plt.figure(figsize=(8,5))
+plt.plot(range(1, n_epochs+1), train_losses, label='Train Loss')
+plt.plot(range(1, n_epochs+1), val_losses, label='Validation Loss')
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.title("Training and Validation Loss over Epochs")
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# -------------------------------
+# Step 7: Plot weights
+# -------------------------------
+def plot_weights(w, shape=(28,28)):
+    w_min, w_max = w.min().item(), w.max().item()
+    fig, axes = plt.subplots(2,5, figsize=(12,5))
+    axes = axes.flatten()
+    for i in range(10):
+        img = w[:, i].view(shape).detach().numpy()
+        axes[i].imshow(img, cmap='seismic', vmin=w_min, vmax=w_max)
+        axes[i].set_title(f"Class {i}")
+        axes[i].axis('off')
+    plt.show()
+
+plot_weights(w)
+
+# -------------------------------
+# Step 8: Plot sample images with true/predicted labels
+# -------------------------------
+def plot_images(images, labels, preds=None, img_shape=(28,28)):
+    assert len(images) == len(labels) == 9  # 3x3 grid
+    
     fig, axes = plt.subplots(3, 3)
     fig.subplots_adjust(hspace=0.3, wspace=0.3)
-
-    for i, ax in enumerate(axes.flat):
-        # Plot image.
-        ax.imshow(images[i].reshape(img_shape), cmap='binary')
-
-        # Show true and predicted classes.
-        if yhat is None:
-            xlabel = "True: {0}".format(y[i])
-        else:
-            xlabel = "True: {0}, Pred: {1}".format(y[i], yhat[i])
-
-        ax.set_xlabel(xlabel)
-        
-        # Remove ticks from the plot.
-        ax.set_xticks([])
-        ax.set_yticks([])
-    plt.show()
-
-#Get image from test set 
-images = test_data[0:9]
-
-# Get the true classes for those images.
-y = test_class[0:9]
-
-# Plot the images and labels using our helper-function above.
-plot_images(images=images, y=y)
-
-
-#Second plot weights 
-
-def plot_weights(w=None):
-    # Get the values for the weights from the TensorFlow variable.
-    #TO DO ####
     
-    # Get the lowest and highest values for the weights.
-    # This is used to correct the colour intensity across
-    # the images so they can be compared with each other.
-    w_min = None
-    #TO DO## obtains these value from W
-    w_max = None
-
-    # Create figure with 3x4 sub-plots,
-    # where the last 2 sub-plots are unused.
-    fig, axes = plt.subplots(3, 4)
-    fig.subplots_adjust(hspace=0.3, wspace=0.3)
-
     for i, ax in enumerate(axes.flat):
-        # Only use the weights for the first 10 sub-plots.
-        if i<10:
-            # Get the weights for the i'th digit and reshape it.
-            # Note that w.shape == (img_size_flat, 10)
-            image = w[:, i].reshape(img_shape)
-
-            # Set the label for the sub-plot.
-            ax.set_xlabel("Weights: {0}".format(i))
-
-            # Plot the image.
-            ax.imshow(image, vmin=w_min, vmax=w_max, cmap='seismic')
-
-        # Remove ticks from each sub-plot.
+        img = images[i].view(img_shape).numpy() if torch.is_tensor(images[i]) else images[i].reshape(img_shape)
+        ax.imshow(img, cmap='binary')
+        
+        if preds is None:
+            xlabel = f"True: {labels[i].item()}" if torch.is_tensor(labels[i]) else f"True: {labels[i]}"
+        else:
+            xlabel = f"True: {labels[i].item() if torch.is_tensor(labels[i]) else labels[i]}, Pred: {preds[i].item() if torch.is_tensor(preds[i]) else preds[i]}"
+        
+        ax.set_xlabel(xlabel)
         ax.set_xticks([])
         ax.set_yticks([])
-        
-    # Ensure the plot is shown correctly with multiple plots
-    # in a single Notebook cell.
     plt.show()
-
