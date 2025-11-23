@@ -1,210 +1,241 @@
-# -*- coding: utf-8 -*-
-"""CNN_week9.ipynb
+#Normalization Analysis
+#Following the pyTorch template
 
-IST597 :- Implementing CNN from scratch
-Week 9 Tutorial
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torchvision
+import torchvision.transforms as transforms
+import time  
 
-Author:- aam35
-"""
+device = "cuda" if torch.cuda.is_available() else "cpu"
+torch.manual_seed(1234)
 
-import tensorflow as tf
-import numpy as np
-import time
-import tensorflow.contrib.eager as tfe
-tf.enable_eager_execution()
-tf.executing_eagerly()
-seed = 1234
-tf.random.set_random_seed(seed=seed)
-np.random.seed(seed)
+#Loading datasets
 
-from tensorflow.examples.tutorials.mnist import input_data
-data = input_data.read_data_sets("/tmp/data/", one_hot=True, reshape=False)
+transform = transforms.Compose([transforms.ToTensor()])
+train_dataset = torchvision.datasets.MNIST(root="./data",
+                                           train=True,
+                                           transform=transform,
+                                           download=True)
+test_dataset = torchvision.datasets.MNIST(root="./data",
+                                          train=False,
+                                          transform=transform,
+                                          download=True)
 
-batch_size = 64
-hidden_size = 100
-learning_rate = 0.01
-output_size = 10
+train_loader = torch.utils.data.DataLoader(train_dataset,
+                                           batch_size=64,
+                                           shuffle=True)
+test_loader = torch.utils.data.DataLoader(test_dataset,
+                                          batch_size=64,
+                                          shuffle=False)
 
-class CNN(object):
-  def __init__(self,hidden_size,output_size,device=None):
-      filter_h, filter_w, filter_c , filter_n = 5 ,5 ,1 ,30
-      self.W1 = tf.Variable(tf.random_normal([filter_h, filter_w, filter_c, filter_n], stddev=0.1))
-      self.b1 = tf.Variable(tf.zeros([filter_n]),dtype=tf.float32)
-      self.W2 = tf.Variable(tf.random_normal([14*14*filter_n, hidden_size], stddev=0.1))
-      self.b2 = tf.Variable(tf.zeros([hidden_size]),dtype=tf.float32)
-      self.W3 = tf.Variable(tf.random_normal([hidden_size, output_size], stddev=0.1))
-      self.b3 = tf.Variable(tf.zeros([output_size]),dtype=tf.float32)
-      self.variables = [self.W1,self.b1, self.W2, self.b2, self.W3, self.b3]
-      self.device = device
-      self.size_output = output_size
+
+#Given CNN class implementation
+
+class CNN(nn.Module):
+    def __init__(self, hidden_size=100, output_size=10):
+        super().__init__()
+
+        filter_h, filter_w, filter_c, filter_n = 5, 5, 1, 30
+
+       
+        self.W1 = nn.Parameter(torch.randn(filter_h, filter_w, filter_c, filter_n) * 0.1)
+        self.b1 = nn.Parameter(torch.zeros(filter_n))
+
+     
+        self.W2 = nn.Parameter(torch.randn(14 * 14 * filter_n, hidden_size) * 0.1)
+        self.b2 = nn.Parameter(torch.zeros(hidden_size))
+
+        self.W3 = nn.Parameter(torch.randn(hidden_size, output_size) * 0.1)
+        self.b3 = nn.Parameter(torch.zeros(output_size))
+
+        #gamma to 1 and beta initialized to 0's for both BN and LN
+        self.gamma_bn1 = nn.Parameter(torch.ones(1, hidden_size))
+        self.beta_bn1  = nn.Parameter(torch.zeros(1, hidden_size))
+
+        self.gamma_bn2 = nn.Parameter(torch.ones(1, output_size))
+        self.beta_bn2  = nn.Parameter(torch.zeros(1, output_size))
+
+       
+        self.gamma_ln1 = nn.Parameter(torch.ones(1, hidden_size))
+        self.beta_ln1  = nn.Parameter(torch.zeros(1, hidden_size))
+
+        self.gamma_ln2 = nn.Parameter(torch.ones(1, output_size))
+        self.beta_ln2  = nn.Parameter(torch.zeros(1, output_size))
+
+        #WN parameters
+        self.v1 = nn.Parameter(torch.randn(14 * 14 * filter_n, hidden_size) * 0.1)
+        self.g1 = nn.Parameter(torch.ones(hidden_size))
+
+        self.v2 = nn.Parameter(torch.randn(hidden_size, output_size) * 0.1)
+        self.g2 = nn.Parameter(torch.ones(output_size))
+
+
+    
+
+    def batch_normalization(self, X, gamma, beta, epsilon=1e-5):
+        result = torch.zeros_like(X)
+        features = X.shape[1]  
+
+        for j in range(features):             
+          col = X[:, j]             
+          mean = col.mean()
+          var = col.var(unbiased=False)
+          result[:, j] = (col - mean) / torch.sqrt(var + epsilon)
+
+        return gamma * result + beta
+
+    def layer_normalization(self, X, gamma, beta, epsilon=1e-5):
+        samples, features = X.shape
+        result = torch.zeros_like(X)
+
+        for i in range(samples):     
+          row = X[i]        
+          mean = row.mean()
+          var  = row.var(unbiased=False)
+          result[i] = (row - mean) / torch.sqrt(var + epsilon)
+
+        return gamma * result + beta
+
+    def weight_normalization(X, v, g, b, epsilon=1e-6):
+    
+      input, output = v.shape
+      weight = torch.zeros_like(v)
+
+    # normalize each column manually
+      for j in range(output):
+        column = v[:, j]                 
+        norm = torch.sqrt((column**2).sum() + epsilon)
+        weight[:, j] = g[j] * (column / norm)   # normalized column
+
+      return X @ weight + b
+
+
+
   
-  def flatten(self,X, window_h, window_w, window_c, out_h, out_w, stride=1, padding=0):
-    
-      X_padded = tf.pad(X, [[0,0], [padding, padding], [padding, padding], [0,0]])
 
-      windows = []
-      for y in range(out_h):
-          for x in range(out_w):
-              window = tf.slice(X_padded, [0, y*stride, x*stride, 0], [-1, window_h, window_w, -1])
-              windows.append(window)
-      stacked = tf.stack(windows) # shape : [out_h, out_w, n, filter_h, filter_w, c]
+    def pad(self, X, padding):
+        return torch.nn.functional.pad(X, (padding, padding, padding, padding))
 
-      return tf.reshape(stacked, [-1, window_c*window_w*window_h])
-  
-  def convolution(self,X, W, b, padding, stride):
-      n, h, w, c = map(lambda d: d.value, X.get_shape())
-      #print(X.get_shape())
-      #print(data.train.images.get_shape())
-      filter_h, filter_w, filter_c, filter_n = [d.value for d in W.get_shape()]
-    
-      out_h = (h + 2*padding - filter_h)//stride + 1
-      out_w = (w + 2*padding - filter_w)//stride + 1
+    def extract_windows(self, X, window_h, window_w, stride, out_h, out_w):
+        N, C, H, W = X.shape
+        windows = []
+        for y in range(out_h):
+            for x in range(out_w):
+                window = X[:, :, y*stride:y*stride+window_h, x*stride:x*stride+window_w]
+                windows.append(window)
+        return torch.stack(windows).reshape(-1, window_h * window_w * C)
 
-      X_flat = self.flatten(X, filter_h, filter_w, filter_c, out_h, out_w, stride, padding)
-      W_flat = tf.reshape(W, [filter_h*filter_w*filter_c, filter_n])
-    
-      z = tf.matmul(X_flat, W_flat) + b     # b: 1 X filter_n
-    
-      return tf.transpose(tf.reshape(z, [out_h, out_w, n, filter_n]), [2, 0, 1, 3])
-    
- 
-    
-  def relu(self,X):
-      return tf.maximum(X, tf.zeros_like(X))
-    
-  def max_pool(self,X, pool_h, pool_w, padding, stride):
-      n, h, w, c = [d.value for d in X.get_shape()]
-    
-      out_h = (h + 2*padding - pool_h)//stride + 1
-      out_w = (w + 2*padding - pool_w)//stride + 1
+    def convolution(self, X, W, b, padding=2, stride=1):
+        N, C, H, W_in = X.shape
+        f_h, f_w, f_c, f_n = W.shape
 
-      X_flat = self.flatten(X, pool_h, pool_w, c, out_h, out_w, stride, padding)
+        out_h = (H + 2*padding - f_h)//stride + 1
+        out_w = (W_in + 2*padding - f_w)//stride + 1
 
-      pool = tf.reduce_max(tf.reshape(X_flat, [out_h, out_w, n, pool_h*pool_w, c]), axis=3)
-      return tf.transpose(pool, [2, 0, 1, 3])
+        X_padded = self.pad(X, padding)
+        X_flat   = self.extract_windows(X_padded, f_h, f_w, stride, out_h, out_w)
+        W_flat   = W.reshape(-1, f_n)
 
-    
-  def affine(self,X, W, b):
-      n = X.get_shape()[0].value # number of samples
-      X_flat = tf.reshape(X, [n, -1])
-      return tf.matmul(X_flat, W) + b 
-    
-  def softmax(self,X):
-      X_centered = X - tf.reduce_max(X) # to avoid overflow
-      X_exp = tf.exp(X_centered)
-      exp_sum = tf.reduce_sum(X_exp, axis=1)
-      return tf.transpose(tf.transpose(X_exp) / exp_sum) 
-    
-  
-  def cross_entropy_error(self,yhat, y):
-      return -tf.reduce_mean(tf.log(tf.reduce_sum(yhat * y, axis=1)))
-    
-  
-  def forward(self,X):
-      if self.device is not None:
-        with tf.device('gpu:0' if self.device == 'gpu' else 'cpu'):
-          self.y = self.compute_output(X)
-      else:
-        self.y = self.compute_output(X)
+        z = X_flat @ W_flat + b
+        return z.view(out_h, out_w, N, f_n).permute(2,0,1,3)
+
+    def relu(self, X):
+        return torch.clamp(X, min=0)
+
+    def max_pool(self, X, pool_h=2, pool_w=2, stride=2):
+        N, C, H, W = X.shape
+        out_h = (H - pool_h)//stride + 1
+        out_w = (W - pool_w)//stride + 1
+
+        windows = []
+        for y in range(out_h):
+            for x in range(out_w):
+                region = X[:, :, y*stride:y*stride+pool_h, x*stride:x*stride+pool_w]
+                windows.append(region)
+
+        stacked = torch.stack(windows)
+        pooled = stacked.max(dim=-1)[0].max(dim=-1)[0]
+        return pooled.permute(1,2,0).reshape(N, C, out_h, out_w)
+
+    def affine(self, X, W, b):
+        return X.reshape(X.shape[0], -1) @ W + b
+
+   
+    def forward(self, X):
+        out = self.convolution(X, self.W1, self.b1)
+        out = self.relu(out)
+        out = self.max_pool(out)
+
+        out = self.affine(out, self.W2, self.b2)
+        out = self.relu(out)
+
+        out = self.affine(out, self.W3, self.b3)
+        return out
+
+#training for 10 epochs
+total_epochs=10
+model = CNN().to(device)
+loss_fn = nn.CrossEntropyLoss()
+optimizer = optim.SGD(model.parameters(), lr=0.01)
+
+start_time = time.time()   
+
+for epoch in range(total_epochs):
+    total_loss = 0
+    total_correct = 0
+    count = 0
+
+    for images, labels in train_loader:
+        images, labels = images.to(device), labels.to(device)
+
+        # Forward pass (manual)
+        out = model.convolution(images, model.W1, model.b1)
+        out = model.relu(out)
+        out = model.max_pool(out)
+
+        out = model.affine(out, model.W2, model.b2)
+
+        #FC1 normalization
+        out = model.manual_batch_norm_fc(out, model.gamma_bn1, model.beta_bn1)
+        # out = model.manual_layer_norm_fc(out, model.gamma_ln1, model.beta_ln1)
+        # out = model.manual_weight_norm_fc(out, model.v1, model.g1, model.b2)
       
-      return self.y
-    
-    
-  def loss(self, y_pred, y_true):
-      '''
-      y_pred - Tensor of shape (batch_size, size_output)
-      y_true - Tensor of shape (batch_size, size_output)
-      '''
-      y_true_tf = tf.cast(tf.reshape(y_true, (-1, self.size_output)), dtype=tf.float32)
-      y_pred_tf = tf.cast(y_pred, dtype=tf.float32)
-      return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=y_pred_tf, labels=y_true_tf))
-    
-    
-  def backward(self, X_train, y_train):
-      """
-      backward pass
-      """
-      # optimizer
-      # Test with SGD,Adam, RMSProp
-      optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
-      #predicted = self.forward(X_train)
-      #current_loss = self.loss(predicted, y_train)
-      #optimizer.minimize(current_loss, self.variables)
 
-      #optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
-      with tf.GradientTape() as tape:
-          predicted = self.forward(X_train)
-          current_loss = self.loss(predicted, y_train)
-      #print(predicted)
-      #print(current_loss)
-      #current_loss_tf = tf.cast(current_loss, dtype=tf.float32)
-      grads = tape.gradient(current_loss, self.variables)
-      optimizer.apply_gradients(zip(grads, self.variables),
-                              global_step=tf.train.get_or_create_global_step())
-      
-      
-  def compute_output(self,X):
-      conv_layer1 = self.convolution(X, self.W1, self.b1, padding=2, stride=1)
-      conv_activation = self.relu(conv_layer1)
-      conv_pool = self.max_pool(conv_activation, pool_h=2, pool_w=2, padding=0, stride=2)
-      conv_affine =self.affine(conv_pool, self.W2,self.b2)
-      conv_affine_activation = self.relu(conv_affine)
-      
-      conv_affine_1 = self.affine(conv_affine_activation, self.W3, self.b3)
-      return conv_affine_1
+        out = model.relu(out)
+        out = model.affine(out, model.W3, model.b3)
 
-def accuracy_function(yhat,true_y):
-  correct_prediction = tf.equal(tf.argmax(yhat, 1), tf.argmax(true_y, 1))
-  accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-  return accuracy
+        # FC2 normalization
+        out = model.manual_batch_norm_fc(out, model.gamma_bn2, model.beta_bn2)
+        # out = model.manual_layer_norm_fc(out, model.gamma_ln2, model.beta_ln2)
+        # out = model.manual_weight_norm_fc(out, model.v2, model.g2, model.b3)
 
-# Initialize model using GPU
-mlp_on_cpu = CNN(hidden_size,output_size, device='gpu')
+        loss = loss_fn(out, labels)
 
-num_epochs = 4
-train_x =  tf.convert_to_tensor(data.train.images)
-train_y = tf.convert_to_tensor(data.train.labels)
-time_start = time.time()
-num_train = 55000
-z= 0
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
-for epoch in range(num_epochs):
-        train_ds = tf.data.Dataset.from_tensor_slices((data.train.images, data.train.labels)).map(lambda x, y: (x, tf.cast(y, tf.float32)))\
-           .shuffle(buffer_size=1000)\
-           .batch(batch_size=batch_size)
-        loss_total = tf.Variable(0, dtype=tf.float32)
-        accuracy_total = tf.Variable(0, dtype=tf.float32)
-        for inputs, outputs in train_ds:
-            preds = mlp_on_cpu.forward(inputs)
-            loss_total = loss_total + mlp_on_cpu.loss(preds, outputs)
-#             accuracy_train = accuracy_function(preds,outputs)
-#             accuracy_total = accuracy_total + accuracy_train
-            mlp_on_cpu.backward(inputs, outputs)
-            #print(z)
-            #z = z+ 1
-        print('Number of Epoch = {} - loss:= {:.4f}'.format(epoch + 1, loss_total.numpy() / num_train))
-        preds = mlp_on_cpu.compute_output(train_x)
-        accuracy_train = accuracy_function(preds,train_y)
-        
-        accuracy_train = accuracy_train * 100
-        print ("Training Accuracy = {}".format(accuracy_train.numpy()))
-        
-        
-#         preds_val = mlp_on_cpu.compute_output(data.validation.images)
-#         accuracy_val = accuracy_function(preds_val,data.validation.labels)
-#         accuracy_val = accuracy_val * 100
-#         print ("Validation Accuracy = {}".format(accuracy_val.numpy()))
- 
-#test accuracy
-test_x =  tf.convert_to_tensor(data.test.images)
-test_y = tf.convert_to_tensor(data.test.labels)
-preds_test = mlp_on_cpu.compute_output(test_x)
-accuracy_test = accuracy_function(preds_test,test_y)
-# To keep sizes compatible with model
-accuracy_test = accuracy_test * 100
-print ("Test Accuracy = {}".format(accuracy_test.numpy()))
+        total_loss += loss.item() * images.size(0)
+        total_correct += (out.argmax(1) == labels).sum().item()
+        count += images.size(0)
 
-        
-# time_taken = time.time() - time_start
-# print('\nTotal time taken (in seconds): {:.2f}'.format(time_taken))
-# #For per epoch_time = Total_Time / Number_of_epochs
+    print(f"Epoch {epoch+1} | Loss: {total_loss/count:.4f} | Acc: {100*total_correct/count:.2f}%")
+
+end_time = time.time()     
+print(f"\nTotal Training Time: {end_time - start_time:.2f} seconds")
+
+
+#test
+
+correct, total = 0, 0
+model.eval()
+with torch.no_grad():
+    for images, labels in test_loader:
+        images, labels = images.to(device), labels.to(device)
+        preds = model(images)
+        correct += (preds.argmax(1) == labels).sum().item()
+        total += labels.size(0)
+
+print(f"Test Accuracy: {100*correct/total:.2f}%")
